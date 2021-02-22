@@ -1,0 +1,297 @@
+# Prior to apply this code, please, check for updates at public GitHub repository https://github.com/a-bakaev/nanoindenation-MD/
+#
+# The code is supported by Alexander Bakaev (SCK CEN) abakaev@sckcen.be
+#
+##########################################################################################
+# ver 1.1. Calculation of stress tensor and Von Mises stresses                           #
+# ver 1.0. Indentation at finite temperature in FeCr with carbon_made spherical indenter #
+##########################################################################################
+
+# Initializing LAMMPS
+clear
+units metal #default units: mass = g/mol; distance = A; energy = eV; velocity = A/ps; force = eV/A; temperature = K; pressure = bar
+dimension 3 #3D dimensionality of simulation
+boundary p p p #periodic boundaries along xyz
+atom_style atomic #coordinates, velocities, atom IDs and types. style of atoms to use in simulation
+
+# Setting variables
+variable time_step equal 0.003 # timesteps (in ps)
+variable analyze_stress equal 0 # 0: no stresses are calculated; 1: calculate and output stresses
+
+# Box
+# size of the box (mobile and lowbrick) (in units of box_a0)
+variable mobile_block_xmin equal 0.0
+variable mobile_block_ymin equal 0.0
+variable mobile_block_zmin equal 0.0
+variable mobile_block_xmax equal 100.0
+variable mobile_block_ymax equal 100.0
+variable mobile_block_zmax equal 100.0
+# Temp, K       a0(Fe), A       a0(Fe91Cr9), A
+# 0             2.8553          2.8614
+# 300           2.8590          2.8666
+# 600           2.8673          2.8754
+# 1000          2.8819          2.8898
+variable box_a0 equal 2.8590 #lattice constant of the box (in A)
+variable lowbrick_thickness equal 7.0 #height of the rigid block (in units of box_a0)
+variable mobile_atoms_temperature equal 300.0 #temperature (in K)
+variable mobile_atoms_alloying_concentr equal 0.0 #concentration of alloying atoms (in %)
+
+# Indenter
+variable indenter_x equal 50.0 #x coordinate of the center of the indenter (in units of box_a0)
+variable indenter_y equal 50.0 #y coordinate of the center of the indenter (in units of box_a0)
+variable indenter_radius equal 7.5 #radius of the indenter (in units of box_a0)
+variable indenter_thickness equal 2.5 #thickness of the indenter (in units of box_a0)
+variable indenter_a0 equal 3.567 #lattice constant of indenter (in A)
+variable indentation_depth equal 20.0 #penetration depth (in A)
+variable indenter_distance_to_surface_initial equal 2.0 #distance between tip of indenter and surface of box (in units of box_a0)
+variable indenter_loading_velocity_x equal 0.0 #x coordinate of loading velocity of indenter (in m/s)
+variable indenter_loading_velocity_y equal 0.0 #y coordinate of loading velocity of indenter (in m/s)
+variable indenter_loading_velocity_z equal 20.0 #z coordinate of loading velocity of indenter (in m/s)
+variable indenter_unloading_velocity_x equal 0.0 #x coordinate of unloading velocity of indenter (in m/s)
+variable indenter_unloading_velocity_y equal 0.0 #y coordinate of unloading velocity of indenter (in m/s)
+variable indenter_unloading_velocity_z equal 20.0 #z coordinate of unloading velocity of indenter (in m/s)
+variable indenter_time_to_hold_after_loading equal 5.0 # time of holding indenter in the box (in ps)
+# number of steps
+variable thermalization_time equal 0.1 # time of performing thermalization (in ns)
+  # average stresses (only if output is on) and positions
+  # if Nevery=2, Nrepeat=6, and Nfreq=100, then values on timesteps 90,92,94,96,98,100 will be used to compute the final average on timestep 100.
+variable nsteps_avg_stresses_and_positions_every_steps equal 1
+variable nsteps_avg_stresses_and_positions_repeat_steps equal 1
+variable nsteps_avg_stresses_and_positions_freq_steps equal 1000
+  # average forces (for summary file: step, depth, stress on indenter etc)
+variable nsteps_avg_forces_every_steps equal 1
+variable nsteps_avg_forces_repeat_steps equal 1
+variable nsteps_avg_forces_freq_steps equal 1
+
+
+# Convert variables to LAMMPS units
+variable lattice_difference equal "v_indenter_a0/v_box_a0"
+variable indenter_x_a0_C equal "v_indenter_x/v_lattice_difference" #x position of indenter center (in lattice units of indenter_a0)
+variable indenter_y_a0_C equal "v_indenter_y/v_lattice_difference" #y position of indenter center (in lattice units of indenter_a0)
+variable indenter_z_a0_C equal "(v_mobile_block_zmax+v_indenter_distance_to_surface_initial+v_indenter_radius)/v_lattice_difference" #z position of indenter center (in lattice units of indenter_a0)
+variable indenter_r_a0_C equal "v_indenter_radius/v_lattice_difference" #radius of the indenter (in lattice units of indenter_a0)
+variable indenter_thickness_a0_C equal "v_indenter_thickness/v_lattice_difference" #thickness of the indenter (in lattice units of indenter_a0)
+variable load_vx equal "v_indenter_loading_velocity_x*(-1.0)/100" #x coordinate of loading velocity of indenter (in A/ps)
+variable load_vy equal "v_indenter_loading_velocity_y*(-1.0)/100" #y coordinate of loading velocity of indenter (in A/ps)
+variable load_vz equal "v_indenter_loading_velocity_z*(-1.0)/100" #z coordinate of loading velocity of indenter (in A/ps)
+variable unload_vx equal "v_indenter_unloading_velocity_x/100" #x coordinate of loading velocity of indenter (in A/ps)
+variable unload_vy equal "v_indenter_unloading_velocity_y/100" #y coordinate of loading velocity of indenter (in A/ps)
+variable unload_vz equal "v_indenter_unloading_velocity_z/100" #z coordinate of loading velocity of indenter (in A/ps)
+variable z_main_min equal "v_mobile_block_zmin-v_lowbrick_thickness" #minimum z coordinate of simulation box
+variable alloying_percentage equal "v_mobile_atoms_alloying_concentr/100" #(in 0-to-1 range)
+variable nsteps_thermal equal round(1000*v_thermalization_time/v_time_step) #number of thermalization steps
+variable nsteps_indentation_loading equal round((v_indentation_depth+v_box_a0*v_indenter_distance_to_surface_initial)/(v_time_step*(-1.0)*v_load_vz)) #number of indentation steps
+variable nsteps_indentation_holding equal round(v_indenter_time_to_hold_after_loading/v_time_step)
+variable nsteps_indentation_unloading equal round((v_indentation_depth+v_box_a0*v_indenter_distance_to_surface_initial)/(v_time_step*v_unload_vz)) #number of indentation steps
+variable all_nsteps equal "v_nsteps_indentation_loading+v_nsteps_indentation_holding+v_nsteps_indentation_unloading+3*v_nsteps_avg_stresses_and_positions_freq_steps+3" # if each number of steps does not divide without a residual on the amount of steps for visualization, then the last frame is averaged over residual
+variable st equal stride(${nsteps_avg_stresses_and_positions_freq_steps},${all_nsteps},${nsteps_avg_stresses_and_positions_freq_steps})  # make dumps of positions and stresses every N steps
+
+# Create box
+
+lattice bcc ${box_a0} orient x 1 0 0 orient y 0 1 0 orient z 0 0 1 # create box with a certain orientation
+region box block ${mobile_block_xmin} ${mobile_block_xmax} ${mobile_block_ymin} ${mobile_block_ymax} ${z_main_min} ${mobile_block_zmax} #region box contains both the main box and the indenter
+create_box 3 box #number of types of atoms in simulation
+create_atoms 1 region box  #filling the simulation box with atoms of certain types
+
+timestep ${time_step}
+
+# Masses
+mass 1 56.0 # Fe
+mass 2 12.0 # C
+mass 3 52.0 # Cr
+
+# Potentials (Bonny for FeCr and ZBL for Fe-C and Cr-C)
+pair_style hybrid/overlay eam/alloy eam/fs zbl 1.0 5.3
+pair_coeff * * eam/alloy FeCr_d.eam.alloy Fe NULL Cr
+pair_coeff * * eam/fs FeCr_s.eam.fs Fe NULL Cr
+pair_coeff 1 2 zbl 26 6
+pair_coeff 2 3 zbl 6 24
+pair_coeff 2 2 zbl 0 0
+
+undump dump_box_before_loop_void_creation
+
+# !!! Attention
+# Insert voids and/or loops here
+# Atomsk [P. Hirel, Computer Physics Communications 197 (2015) 212-219. https://doi.org/10.1016/j.cpc.2015.07.012] software could be used for this purpose
+
+
+# CG minimize after loops creation in pure material (before alloying)
+thermo_style custom step temp press pe lx ly lz #output style to LAMMPS log (lx - box size along x)
+thermo 100 # output frequency to LAMMPS log file
+min_style cg # conjugate gradient energy minimization
+minimize 1e-16 1e-8 100000 100000 # stopping tolerance for energy (unitless); stopping tolerance for force (force units); max iterations of minimizer; max number of force/energy evaluations
+
+# Alloying
+set group all type/fraction 3 ${alloying_percentage} 12345 # alloying mobile block with impurities
+
+# !!! Attention
+# Insert Cr precipitates here
+
+# CG minimize after alloying
+thermo_style custom step temp press pe lx ly lz #output style to LAMMPS log (lx - box size along x)
+thermo 100 # output frequency to LAMMPS log file
+min_style cg # conjugate gradient energy minimization
+minimize 1e-16 1e-8 100000 100000 # stopping tolerance for energy (unitless); stopping tolerance for force (force units); max iterations of minimizer; max number of force/energy evaluations
+
+# Thermalization before opening up the free surface and fixing bottom brick
+reset_timestep 0 #timestep counter is zeroed
+thermo_style custom step etotal ke pe press temp lx ly lz #output style to LAMMPS log (ke - kinetic Energy; pe - potential energy, etotal - total energy; lx - box size along x)
+thermo 500  # output frequency to LAMMPS log file
+velocity all create ${mobile_atoms_temperature} 12345 # initialize velocities up to a target temperature. Last argument - number for random distribution of velocities
+fix 3 all nvt temp ${mobile_atoms_temperature} ${mobile_atoms_temperature} 0.2 tchain 5 #generate positions and velocities sampled from the canonical ensemble
+run ${nsteps_thermal}
+unfix 3
+
+# Now open up free surface and fix bottom brick
+change_box all boundary p p s
+
+# Define mobile and rigid groups
+variable mobile_block_zmin_corrected equal "v_mobile_block_zmin+0.000000001" # added to avoid occurence of the same atoms in mobile and low_rigid_block blocks
+region mobile block EDGE EDGE EDGE EDGE ${mobile_block_zmin_corrected} EDGE #setting the size of mobile atoms block
+group mobile region mobile
+region bottom block EDGE EDGE EDGE EDGE EDGE ${mobile_block_zmin} #setting the size of bottom atoms block
+group bottom region bottom
+group mobile_and_low_rigid_block union mobile bottom
+
+# Freeze bottom block
+fix 1 bottom setforce 0.0 0.0 0.0 # zero forces on bottom block
+velocity bottom set 0.0 0.0 0.0
+
+# Thermalization after opening up the free surface and fixing bottom brick
+reset_timestep 0 #timestep counter is zeroed
+compute tempMobileBlock mobile temp # calculate temperature of mobile brick only
+variable tempMobileBlock equal "c_tempMobileBlock"
+thermo_style custom step etotal ke pe press v_tempMobileBlock lx ly lz #output style to LAMMPS log (ke - kinetic Energy; pe - potential energy,
+thermo 500  # output frequency to LAMMPS log file
+velocity mobile create ${mobile_atoms_temperature} 12345 # initialize velocities up to a target temperature. Last argument - number for random distribution of velocities
+fix 3 mobile nvt temp ${mobile_atoms_temperature} ${mobile_atoms_temperature} 0.2 tchain 5 #generate positions and velocities sampled from the canonical ensemble
+run ${nsteps_thermal}
+unfix 3
+
+variable indenter_z_new equal "(v_indenter_distance_to_surface_initial+v_indenter_radius*2)*v_box_a0" #z position of indenter center
+change_box all z delta 0 ${indenter_z_new} boundary p p p # enlarging box to make a space for the indenter
+
+# Create spherical indenter
+lattice diamond ${indenter_a0}
+region indenter sphere ${indenter_x_a0_C} ${indenter_y_a0_C} ${indenter_z_a0_C} ${indenter_r_a0_C} #setting the position and the size of indenter
+create_atoms 2 region indenter #filling the indenter with atoms of 2 type
+group indenter region indenter
+# Cut the top and inner parts and make an indenter with certain thickness
+# Cut the inner sphere from indenter
+variable inner_sphere_r equal "v_indenter_r_a0_C-v_indenter_thickness_a0_C"
+region inner sphere ${indenter_x_a0_C} ${indenter_y_a0_C} ${indenter_z_a0_C} ${inner_sphere_r}
+group cut1 region inner
+delete_atoms group cut1
+# Cut the top part to make indenter hemispherical
+region top block INF INF INF INF ${indenter_z_a0_C} INF
+group cut2 region top
+delete_atoms group cut2
+group ind union indenter cut1 cut2
+fix 2 ind setforce 0.0 0.0 0.0 #makes indenter rigid. output of the fix is the vector with fx, fy, fz - resulting force from all outer atoms on this block
+
+#Reference snapshot output #optional printing of reference snapshot
+group mobile_and_indenter union ind mobile # mobile atoms + indenter will be visualized
+#dump reference mobile_and_indenter xyz 1 reference.xyz
+#run 0
+#undump reference
+
+# Define output
+variable contact_load_depth equal "((-1.0)*step*v_time_step*v_load_vz)-v_indenter_distance_to_surface_initial*v_box_a0" #calculating penetration depth at each step
+variable ind_load_surface equal "PI*(2*v_box_a0*v_indenter_radius-v_contact_load_depth)*v_contact_load_depth+1.0e-20" #calculating contact area at each step for spherical indenter
+variable lower_brick_surface equal "v_box_a0*v_box_a0*(v_mobile_block_xmax-v_mobile_block_xmin)*(v_mobile_block_ymax-v_mobile_block_ymin)" #area of the lower brick
+
+# Average positions and stresses over time
+reset_timestep 0 #set step counter to zero
+
+# Analyze and average positions and stresses OR Analyze and average positions only
+# NULL -  "the kinetic energy is included and you wish to use atom velocities as-is" &
+# voronoi volume per atom (A^3)
+if "${analyze_stress}==1" then &
+'compute stress mobile_and_indenter stress/atom NULL' &
+'compute position mobile_and_indenter property/atom x y z' &
+'compute per_atom_volume mobile_and_indenter voronoi/atom' &
+'fix time_averaging_1 mobile_and_indenter ave/atom ${nsteps_avg_stresses_and_positions_every_steps} ${nsteps_avg_stresses_and_positions_repeat_steps} ${nsteps_avg_stresses_and_positions_freq_steps} c_stress[*] c_position[*] c_per_atom_volume[*]' &
+'variable stress_xx atom "(-0.1)*f_time_averaging_1[1]/(f_time_averaging_1[10]+1e-20)"' &
+'variable stress_yy atom "(-0.1)*f_time_averaging_1[2]/(f_time_averaging_1[10]+1e-20)"' &
+'variable stress_zz atom "(-0.1)*f_time_averaging_1[3]/(f_time_averaging_1[10]+1e-20)"' &
+'variable stress_xy atom "(-0.1)*f_time_averaging_1[4]/(f_time_averaging_1[10]+1e-20)"' &
+'variable stress_xz atom "(-0.1)*f_time_averaging_1[5]/(f_time_averaging_1[10]+1e-20)"' &
+'variable stress_yz atom "(-0.1)*f_time_averaging_1[6]/(f_time_averaging_1[10]+1e-20)"' &
+'variable hydrostatic_stress atom "((v_stress_xx+v_stress_yy+v_stress_zz)/3)"' &
+'variable von_mises_stress atom sqrt((0.5)*((v_stress_xx-v_stress_yy)^2+(v_stress_yy-v_stress_zz)^2+(v_stress_zz-v_stress_xx)^2+6*(v_stress_xy^2+v_stress_xz^2+v_stress_yz^2)))' &
+'variable triaxiality atom "v_hydrostatic_stress/(v_von_mises_stress+1e-20)"' &
+'dump stress mobile_and_indenter custom/gz ${nsteps_avg_stresses_and_positions_freq_steps} pos_and_stress.xyz.gz type f_time_averaging_1[7] f_time_averaging_1[8] f_time_averaging_1[9] v_stress_xx v_stress_yy v_stress_zz v_stress_xy v_stress_xz v_stress_yz v_hydrostatic_stress v_von_mises_stress v_triaxiality' &
+'dump_modify stress every v_st format float %10.3f' &
+else &
+'compute position mobile_and_indenter property/atom x y z' &
+'fix time_averaging_1 mobile_and_indenter ave/atom ${nsteps_avg_stresses_and_positions_every_steps} ${nsteps_avg_stresses_and_positions_repeat_steps} ${nsteps_avg_stresses_and_positions_freq_steps} c_position[*]' &
+'dump stress mobile_and_indenter custom/gz ${nsteps_avg_stresses_and_positions_freq_steps} pos_no_stress.xyz.gz type f_time_averaging_1[1] f_time_averaging_1[2] f_time_averaging_1[3]' &
+'dump_modify stress every v_st format float %10.3f'
+
+# Average stress over time steps
+variable force_bot equal f_1[3] #getting z component of total force acting on lower brick
+variable force_ind equal f_2[3] #getting z component of total force acting on indenter
+fix time_averaging_bottom bottom ave/time ${nsteps_avg_forces_every_steps} ${nsteps_avg_forces_repeat_steps} ${nsteps_avg_forces_freq_steps} v_force_bot #averaging force_z on lower brick over time for each atom
+fix time_averaging_indenter ind ave/time ${nsteps_avg_forces_every_steps} ${nsteps_avg_forces_repeat_steps} ${nsteps_avg_forces_freq_steps} v_force_ind #averaging force_z on indenter over time for each atom
+fix time_averaging_temperature mobile ave/time ${nsteps_avg_forces_every_steps} ${nsteps_avg_forces_repeat_steps} ${nsteps_avg_forces_freq_steps} c_tempMobileBlock #averaging temperature in mobile block over time (in K)
+variable ind_force equal "1.60217662*f_time_averaging_indenter" #force on indenter. eV/A to nN
+variable ind_load_stress equal "f_time_averaging_indenter*160.21766208/v_ind_load_surface" #stress on indenter. eV/A3 to GPa
+variable bot_stress equal "f_time_averaging_bottom*160.21766208e+3/v_lower_brick_surface" #stress on lower brick. eV/A3 to MPa
+variable time equal "step*v_time_step"
+variable mobile_temperature equal f_time_averaging_temperature
+# Formatting variables
+variable a format time %7.1f
+variable b format contact_load_depth %10.3f
+variable c format mobile_temperature %10.3f
+variable d format ind_force %10.3f
+variable g format bot_stress %10.3f
+variable h format ind_load_stress %10.3f
+# Output files
+fix printinfo all print ${nsteps_avg_forces_freq_steps} "$a             $(step)          $c     $b      $d              $h              $g" file summary.dat screen no &
+                                                title "  t(ps)                 tstep        Temperature(K)       depth(A)        Find(nN)               Sind(GPa)              Slowb(MPa)"
+
+# Indenter movement
+
+# Loading
+velocity ind set ${load_vx} ${load_vy} ${load_vz} units box #setting the load indenter velocity
+thermo_style custom step etotal ke pe press v_tempMobileBlock lx ly lz
+fix 6 all nve #simulation in microcanonical ensemble (NVE)
+run ${nsteps_indentation_loading}
+unfix printinfo
+
+# Holding
+velocity ind set 0.0 0.0 0.0 units box #immobilize indenter
+variable contact_hold_depth equal "((-1.0)*v_nsteps_indentation_loading*v_time_step*v_load_vz)-v_indenter_distance_to_surface_initial*v_box_a0" #contact area is constant
+variable ind_hold_surface equal "PI*(2*v_box_a0*v_indenter_radius-v_contact_hold_depth)*v_contact_hold_depth" #calculating contact area at each step for spherical indenter
+variable ind_hold_stress equal "f_time_averaging_indenter*160.21766208/v_ind_hold_surface" #stress on indenter. eV/A3 to GPa
+variable b_0 format contact_hold_depth %10.3f
+variable h_0 format ind_hold_stress %10.3f
+fix printholdinfo all print ${nsteps_avg_forces_freq_steps} "$a                 $(step)          $c     ${b_0}  $d              ${h_0}          $g" append summary.dat screen no
+run ${nsteps_indentation_holding}
+unfix printholdinfo
+
+# Unloading
+variable contact_unload_depth equal "v_indentation_depth-(step-v_nsteps_indentation_loading-v_nsteps_indentation_holding)*v_time_step*v_unload_vz" #calculating penetration depth at each step while unloading
+variable ind_unload_surface equal "PI*(2*v_box_a0*v_indenter_radius-v_contact_unload_depth)*v_contact_unload_depth+1.0e-20" #calculating contact area at each step while unloading
+variable ind_unload_stress equal "f_time_averaging_indenter*160.21766208/v_ind_unload_surface" #calculating stress on indenter while unloading. eV/A3 to GPa
+# Formatting variables
+variable b_1 format contact_unload_depth %10.3f
+variable h_1 format ind_unload_stress %10.3f
+# Output files
+fix printinfounload all print ${nsteps_avg_forces_freq_steps} "$a               $(step)          $c     ${b_1}  $d              ${h_1}          $g" append summary.dat screen no
+velocity ind set ${unload_vx} ${unload_vy} ${unload_vz} units box #setting the unload indenter velocity
+run ${nsteps_indentation_unloading}
+
+# rename columns in the output file (positions/stresses) to avoid error message (unknown columns) in OVITO
+shell zcat pos_no_stress.xyz.gz > pos_no_stress.xyz # unpacking to edit the file
+shell zcat pos_and_stress.xyz.gz > pos_and_stress.xyz # unpacking to edit the file
+shell rm pos_no_stress.xyz.gz # remove gzipped files
+shell rm pos_and_stress.xyz.gz
+shell find pos* -size  0 -print0 |xargs -0 rm # remove temporary empty files
+shell "sed -i 's/f_time_averaging_1\[1\]/x/i' pos*"
+shell "sed -i 's/f_time_averaging_1\[2\]/y/i' pos*"
+shell "sed -i 's/f_time_averaging_1\[3\]/z/i' pos*"
+shell "sed -i 's/f_time_averaging_1\[7\]/x/i' pos*"
+shell "sed -i 's/f_time_averaging_1\[8\]/y/i' pos*"
+shell "sed -i 's/f_time_averaging_1\[9\]/z/i' pos*"
+shell gzip pos* # compressing back the output file
